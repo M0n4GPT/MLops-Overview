@@ -1,4 +1,4 @@
-# From Hello, Linux and Hello, Chameleon tutorial
+# From 'Hello, Linux' and 'Hello, Chameleon' tutorial
 ## Log in over SSH from Local Terminal
 
 To log in to the VM over SSH from your local terminal, follow these steps:
