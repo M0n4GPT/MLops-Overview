@@ -1,11 +1,16 @@
 # Deploying a Self-Managed Kubernetes Cluster on Chameleon Instances
 
 ## Overview
-This note details the steps to set up a Kubernetes cluster on Chameleon Cloud using OpenStack CLI. The process includes:
-1. Provisioning network and compute resources.
-2. Installing Docker on nodes.
-3. Running and managing containers.
-4. Setting up Kubernetes.
+
+This note details the steps to set up a Kubernetes cluster on Chameleon Cloud using OpenStack CLI, it was designed to handle microservices efficiently. It includes the following:
+
+- **Kubernetes Cluster Setup:** Establishing the foundation for containerized applications.
+- **Docker:** Packaging the application services to ensure portability.
+- **Kubernetes Management:** Ensuring automatic scaling, load balancing, and high availability.
+- **CI/CD Pipeline:** Automating the build, test, and deployment process.
+- **Load Testing:** Simulating a load test to optimize performance.
+
+The final system is a robust, scalable architecture that ensures reliable, minimal-intervention management of applications.
 
 ## Provision Resources Using the OpenStack CLI
 
