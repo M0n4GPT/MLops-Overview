@@ -21,7 +21,7 @@ Although the GUI is useful for exploring the capabilities of a cloud, the comman
 - View already provisioned resources.
 
 ### Authentication
-To use the CLI, authentication with the OpenStack Keystone service is required. The Chameleon JupyterHub instance is already configured to authenticate the OpenStack client. Set the required environment variables by replacing `CHI-XXXXXX` with your Chameleon project name:
+To use the CLI, authentication with the OpenStack Keystone service is required. Chameleon JupyterHub instance is already configured to authenticate the OpenStack client. Set the required environment variables by replacing `CHI-XXXXXX` with Chameleon project name:
 
 ```sh
 export OS_AUTH_URL=https://kvm.tacc.chameleoncloud.org:5000/v3
@@ -56,11 +56,11 @@ To filter the output by net ID:
 openstack network list | grep netID
 ```
 
-To get details of a network:
+To get details of any network:
 
 ```sh
 openstack network show private_cloud_net_netID
-openstack network show sharednet1
+openstack network show sharednet1(the name of the network)
 ```
 
 List subnets:
@@ -77,6 +77,7 @@ openstack subnet show private_cloud_subnet_netID
 
 ### Creating Ports
 Create two new ports:
+
 
 ```sh
 openstack port create \
@@ -100,7 +101,7 @@ openstack port list --network private_cloud_net_netID
 
 ## Working with Compute Resources
 
-List provisioned servers:
+List provisioned servers that includes id in their names:
 
 ```sh
 openstack server list --name "netID"
@@ -109,6 +110,8 @@ openstack server list --name "netID"
 ### Creating Compute Instances
 
 List available images, flavors, and key pairs:
+
+(A flavor in OpenStack defines the compute resources (vCPUs, RAM, and disk) allocated to a VM instance.)
 
 ```sh
 openstack image list --limit 5
@@ -144,13 +147,15 @@ openstack server create \
   node3-cloud-netID
 ```
 
-List new instances:
+After launch, List new instances:
 
 ```sh
 openstack server list --name "netID"
 ```
 
 ## Deploy a Service in a Docker Container
+
+Docker is a platform for developing, shipping, and running applications in lightweight, portable containers that package code and dependencies together, ensuring consistency across environments.
 
 ### Objectives
 - Pull and run Docker containers.
@@ -160,7 +165,7 @@ openstack server list --name "netID"
 
 ### Installing Docker
 
-On `node1`, install Docker:
+On `node1` host, install Docker engine:
 
 ```sh
 sudo apt-get update
@@ -195,7 +200,7 @@ Add the user to the Docker group:
 sudo groupadd -f docker; sudo usermod -aG docker $USER
 ```
 
-Exit and re-open the SSH session, then verify:
+Exit and re-open the SSH session, then verify(should see a group of named docker):
 
 ```sh
 id
@@ -208,6 +213,8 @@ docker run hello-world
 ```
 
 ### Container Networking
+
+Docker containers communicate using a virtual network. By default, Docker creates a bridge network (docker0), which acts like a virtual switch, allowing containers to talk to each other and access the internet while keeping them isolated from the host system.
 
 Inspect Docker networking:
 
@@ -222,8 +229,13 @@ Pull and run an Alpine container interactively:
 docker pull alpine
 docker run -it alpine
 ```
+The `-it` flags in `docker run -it alpine` mean:
+ 
+*   **`-i` (interactive)**: Keeps the container’s standard input (stdin) open, allowing you to interact with it.
+    
+*   **`-t` (TTY)**: Allocates a pseudo-terminal, making the shell inside the container behave like a normal terminal.
 
-Inspect running containers:
+Inspect running containers (run on node1 host):
 
 ```sh
 docker ps
@@ -246,10 +258,136 @@ Inside the Alpine container, check network interfaces:
 ```sh
 ip addr
 ```
+![docker-bridge-structure](/img/docker-bridge.png)
+
+Inside the container, get a list of network hops to address 1.1.1.1:
+
+```sh
+traceroute 1.1.1.1
+```
+
+to exit container session
+```sh
+exit
+```
+
+### Publishing a Port in Docker
+
+First, run an Nginx container in detached mode:
+
+```sh
+# Run on node1 host
+docker run -d nginx:alpine
+```
+
+- `-d`: Runs the container in "detached" mode (in the background).
+- `nginx:alpine`: Uses the lightweight Alpine-based Nginx image.
+
+The container starts an Nginx web server that listens on **port 80** inside the container.
+
+#### Checking the Exposed Ports
+To verify which ports the container exposes by default, run:
+
+```sh
+# Run on node1 host
+docker image inspect nginx:alpine
+```
+
+Look for the `"ExposedPorts"` section in the output, which shows that **port 80** is exposed inside the container.
+
+#### Accessing the Container Locally
+Since the container is isolated, we need to find its internal IP address:
+
+```sh
+# Run on node1 host
+docker network inspect bridge
+```
+
+Find the IP address of the running container (e.g., `172.17.0.X`). You can now test access using a terminal-based web browser:
+
+```sh
+# Run on node1 host
+sudo apt -y install lynx  # Install lynx web browser
+lynx http://172.17.0.X/  # Replace X with actual container IP
+```
+Use `q` and then `y` to quit the `lynx` browser.
+
+
+This allows access **from the host**, but **not from an external machine**.
+
+#### Mapping the Container's Port to the Host
+To make the Nginx service accessible externally, stop the running container first:
+
+```sh
+# Run on node1 host
+docker ps  # List running containers
+docker stop CONTAINER_ID  # Stop the container
+```
+
+Now restart the container with port forwarding:
+
+```sh
+# Run on node1 host
+docker run -d -p 80:80 nginx:alpine
+```
+
+- `-p 80:80`: Maps **port 80 of the host** to **port 80 of the container**, allowing external access.
+
+#### Verifying Access
+Check the host machine's IP address on the shared network:
+
+```sh
+# Run on node1 host
+ip addr
+```
+
+Find the address of the form **10.56.X.Y**. Then, test access:
+
+```sh
+# Run on node1 host
+lynx http://10.56.X.Y/
+```
+
+Now, since the instance has a **floating IP** assigned and the **security group allows traffic on port 80**, you can access the web server from an external browser using:
+
+```sh
+http://A.B.C.D/  # Replace A.B.C.D with your floating IP
+```
+
+You should see the Nginx welcome page.
+
+#### Checking Firewall Rules
+Docker sets up forwarding rules to enable this mapping. Verify them with:
+
+```sh
+# Run on node1 host
+sudo iptables --list -n
+sudo iptables --list -n -t nat
+```
+
+Look for the `DOCKER` chain, which includes additional rules to handle port forwarding.
+
+#### Stopping the Container
+To stop and remove the running container:
+
+```sh
+# Run on node1 host
+docker ps  # List running containers
+docker stop CONTAINER_ID  # Stop the container
+```
+
 
 ### Container Filesystems
 
-To explore the Docker filesystem, get back into the nginx container. We’ll specify a name for our container instance this time, which will make it easier to take further action on it. First, we’ll start the container in detached mode:
+
+**Container Layer**: When a container starts, Docker adds a **read-write layer** on top of the **read-only image layers**. Changes (new, modified, or deleted files) occur only in this layer and are lost when the container stops unless committed to a new image. Multiple containers from the same image share the same image layers but have separate container layers, ensuring isolation while optimizing storage.
+
+![docker container filesystem](/img/docker-filesys.png)
+
+*Source: [Docker Documentation](https://docs.docker.com/engine/storage/drivers/overlayfs-driver/)*
+
+
+To explore the Docker filesystem, First, we’ll start the container in detached mode:
 
 ```sh
 # run on node1 host
@@ -360,6 +498,8 @@ to:
 ```html
 <h1>Welcome to web1!</h1>
 ```
+Switch to insert mode (`i`), delete "nginx," replace it with "web1," exit insert mode (`Esc`), then save and close the editor with `:wq` \+ `Enter`.
+
 
 Save and exit `vi`. Test the change:
 
@@ -371,13 +511,21 @@ lynx http://172.17.0.X/
 
 Check the changes in filesystem layers:
 
+image layer:
 ```sh
 # run on node1 host
 for dir in "${LOWERDIRS[@]}"; do
      FILE="$dir/usr/share/nginx/html/index.html"
      sudo bash -c "[ -f '$FILE' ] && cat '$FILE'"
 done
+```
+
+(writeable) container layer
+```
 sudo cat "$UPPERDIR/usr/share/nginx/html/index.html"
+```
+(processes inside the container will see)merged version
+```
 sudo cat "$MERGED/usr/share/nginx/html/index.html"
 ```
 
@@ -405,6 +553,8 @@ Stop both containers:
 # run on node1 host
 docker stop web1 web2
 ```
+
+
 
 ### Volume Mounts
 
@@ -466,7 +616,7 @@ Edit the HTML file from the host:
 sudo vim ~/data/web/index.html
 ```
 
-Add:
+press `i` to insert, Add:
 
 ```html
 <!DOCTYPE html>
