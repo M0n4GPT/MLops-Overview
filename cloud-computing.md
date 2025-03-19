@@ -2,7 +2,33 @@
 
 ## Overview
 
-This note details the steps to set up a Kubernetes cluster on Chameleon Cloud using OpenStack CLI, it was designed to handle microservices efficiently. It includes the following:
+This guide covers the process of provisioning resources, deploying services, and managing them in a cloud environment, using both the Horizon GUI and `openstack` CLI. The steps include:
+ 
+**Provisioning Resources with Horizon GUI**: 
+*   Accessing the Horizon GUI
+*   Creating a private network and provisioning ports
+*   Provisioning VM instances and floating IPs, followed by SSH access
+*   Adding additional instances
+    
+**Provisioning Resources with `openstack` CLI**:  
+*   Authentication and cloud exploration
+*   Managing network and compute resources using `openstack` commands
+
+**Deploying a Service in a Docker Container**:  
+*   Installing and configuring a container engine   
+*   Setting up container networking and volume mounts   
+*   Building and serving a machine learning model inside a container   
+ 
+**Deploying on Kubernetes**:
+*   Preparing the environment with `kubespray` and installing Kubernetes  
+*   Setting up a container registry 
+*   Deploying and scaling services on Kubernetes, including automatic scaling and managing replicas  
+*   Stopping the deployment
+  
+**Resource Cleanup**:
+*   Deleting the resources once the experiment is complete.
+
+It includes the following:
 
 - **Kubernetes Cluster Setup:** Establishing the foundation for containerized applications.
 - **Docker:** Packaging the application services to ensure portability.
@@ -11,6 +37,8 @@ This note details the steps to set up a Kubernetes cluster on Chameleon Cloud us
 - **Load Testing:** Simulating a load test to optimize performance.
 
 The final system is a robust, scalable architecture that ensures reliable, minimal-intervention management of applications.
+
+------------
 
 ## Provision Resources Using the OpenStack CLI
 
