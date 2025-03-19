@@ -668,7 +668,6 @@ http://A.B.C.D
 Upload a food image to test the classification model.
 
 ## Deploy on Kubernetes
-====================
  
 ### Introduction and Benefits
 -------------------------
@@ -781,7 +780,8 @@ cd kubespray
 declare -a IPS=(192.168.1.11 192.168.1.12 192.168.1.13)
 CONFIG\_FILE=inventory/mycluster/hosts.yaml python3 contrib/inventory\_builder/inventory.py ${IPS\[@\]}
 
-# Verify the configurationcat ~/kubespray/inventory/mycluster/hosts.yaml
+# Verify the configuration
+cat ~/kubespray/inventory/mycluster/hosts.yaml
 ```
  
 ### Deploying the Cluster
@@ -815,14 +815,15 @@ sudo chgrp -R cc /home/cc/.kube
 kubectl get nodes  # Should show three nodes with "Ready" status
 ```
  
-Setting Up a Container Registry
--------------------------------
- 
+### Setting Up a Container Registry
+
+if haven't configured to let the docker commands run as an unprivileged user, do `sudo groupadd -f docker; sudo usermod -aG docker $USER`first.
+
 Kubernetes needs access to container images across all nodes, so we'll create a private registry:
  
 ```sh
-
 # bash
+
 # On node1: Create Docker registry container
 docker run -d -p 5000:5000 --restart always --name registry registry:2
 
@@ -836,22 +837,20 @@ sudo vim /etc/docker/daemon.json
 # Restart Docker to apply changes (on each node)
 sudo service docker restart
 
-# Build and push our application image
+# Build and push our application image (git clone first)
 docker build -t gourmetgram-app:0.0.1 gourmetgram
 docker tag gourmetgram-app:0.0.1 node1:5000/gourmetgram-app:latest
 docker push node1:5000/gourmetgram-app
 ```
  
-Deploying the Application on Kubernetes
----------------------------------------
- 
+### Deploying the Application on Kubernetes
 ### Creating a Kubernetes Namespace
  
 Namespaces provide logical isolation for applications:
  
 ```sh
-
 # bash
+
 kubectl create namespace kube-gourmetgram
 kubectl get namespaces  # Verify the namespace was created
 ```
@@ -861,8 +860,8 @@ kubectl get namespaces  # Verify the namespace was created
 We'll define our application using Kubernetes manifests:
  
 ```sh
-
 # bash
+
 vim deployment.yaml
 ```
  
@@ -963,6 +962,7 @@ Let's see how our single pod performs under load:
  
 ```sh
 # bash
+
 # Install load testing tool
 sudo apt update
 sudo apt -y install siege
@@ -1000,6 +1000,7 @@ Run the same load test as before:
  
 ```sh
 # bash
+
 # In terminal 1: Monitor all pods
 watch -n 5 kubectl top pod -n kube-gourmetgram
 
@@ -1056,6 +1057,7 @@ Apply the configuration:
  
 ```sh
 # bash
+
 kubectl apply -f deployment.yaml
 
 # Monitor the autoscaler and pods
