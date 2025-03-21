@@ -100,7 +100,7 @@ git clone https://github.com/xxx
 
 #### Baseline Experiment
 
-First, we attempt fine-tuning the TinyLlama-1.1B using full precision and a batch size of 32:
+First, fine-tuning the TinyLlama-1.1B using **full precision** and a **batch size of 32**:
 
 ```bash
 litgpt finetune_full --config config/tiny-llama-full.yaml --train.global_batch_size 32 --train.micro_batch_size 32
@@ -140,6 +140,19 @@ Mixed precision trading off some memory for better precision:
 litgpt finetune_full --config config/tiny-llama-full.yaml --train.global_batch_size 32 --train.micro_batch_size 8 --precision bf16-mixed
 ```
 
+#### Result:
+* The baseline model could not fit in the 80GB GPU memory. 
+
+* The reduced batch size has a memory usage of 30.41GB but was slower 137.04s. The reason behind is that a smaller batch size reduces the memory footprint, but also reduces the efficiency of parallel computing, so the training becomes slower.
+
+* The gradient accumulation makes the training much faster with 57.19s, 7646.24 tok/s but slightly increased memory usage to 34.82GB. The reason behind is that multiple small batches are accumulated before updating weights, improving computing efficiency without significantly increasing memory usage.
+ 
+* The reduced precision further reduced memory usage to 20.10GB and faster training by using 34.97s, 12506.13 tok/s. Because lower precision reduces memory per parameter and speeds up computations and the consequence is lower model accuracy.
+
+* The mixed precision strategy results in slightly more memory used 31.32GB, and training slightly slower to 39.69s, 11016.98 tok/s. It's because it balances memory savings and numerical stability and lead to a trade-off between speed and accuracy.
+
+
+
 #### Experiment: Training Larger Models
 
 Scaling up to a 3B parameter model:
@@ -166,7 +179,38 @@ Using SGD optimizer for the 13B model (slower but fits in memory):
 litgpt finetune_full --config config/open-llama-13b-full.yaml --train.global_batch_size 1 --train.micro_batch_size 1 --precision bf16-true --optimizer SGD --train.max_steps 25
 ```
 
+#### Result:
+* Based on the results of the litgpt output, training time increases as model size grows. 1.1B to 3B: Memory increased from 34.82GB to 46.89GB, training time increased from 57s to 83.8s. And 3B to 7B: Memory increased from 46.89GB to 69.71GB, training time increased from 83.8s to 138s. 
+
+* Changing the optimizer helps because Adam has two state values per parameter, consuming about 3 times memory compared to the model itself. While SGD only tracks gradients, lowering memory a lot.
+
+
 #### Parameter Efficient Fine-Tuning
+
+
+#### LoRA (Low-Rank Adaptation)
+
+LoRA is a parameter-efficient fine-tuning method that works through the following mechanisms:
+
+1. **Core Principle**: LoRA freezes the pre-trained model weights and injects trainable low-rank matrices into each Transformer layer.
+2. **Low-Rank Decomposition**: It represents weight updates as a product of two smaller matrices, significantly reducing the number of parameters that need to be trained and stored.
+3. **Mathematical Representation**: If W is the original weight matrix, LoRA represents the update as W + ΔW = W + BA, where B and A are low-rank matrices.
+4. **Advantages**: Only a small fraction of parameters need to be trained (typically 0.1%-1% of the original model), saving memory and computational resources.
+
+#### QLoRA (Quantized LoRA)
+
+QLoRA extends LoRA by incorporating quantization techniques:
+
+1. **Quantized Base Model**: QLoRA first quantizes the base model (typically to 4-bit precision), substantially reducing memory footprint.
+2. **High-Precision Computation**: While storage uses low precision, high-precision computations are maintained for gradient calculations during backpropagation.
+3. **Technical Innovations**:
+   - 4-bit NormalFloat (NF4) quantization
+   - Double quantization techniques
+   - Paged optimizer
+4. **Advantages**: Enables fine-tuning of large language models on consumer hardware while maintaining performance.
+
+In TinyLlama applications, these techniques allow for efficient customization of the model even in resource-constrained environments, without having to train or store the full model parameters. These methods are particularly suitable for already lightweight models like TinyLlama, further enhancing their applicability on resource-limited devices.
+
 
 Using LoRA for the 1.1B model:
 
@@ -198,9 +242,66 @@ Using LoRA for the 13B model:
 litgpt finetune --config config/open-llama-13b-lora.yaml
 ```
 
+#### Result:
+* 1.1B model with LoRA only use a small 8.00 GB memory and has a training time of 45.17s. It's because it fine-tuning only low-rank matrices, not the full model, makes training faster and more efficient, requiring minimal memory.
+
+* 3B model with LoRA has 86.35s training time and 17.02 GB memory usage. It's because as the model size increases, both training time and memory usage grow, but still remain relatively low due to the parameter-efficient fine-tuning feature of LoRA.
+
+* 7B model with LoRA has longer training time 133.42s and bigger memory usage 29.99 GB. The reason is same as the increase from 1.1B to 3B. Larger model longer time.
+
+* 7B model with LoRA and Quantization technique has longer time of 182.81s, but less memory usage of 21.25 GB. The reason is that quantization can further reduces memory usage by representing model weights with lower precision, but it will give slower training speed. 
+
+* The final 13B model with LoRA has largest 222.68s training time and 51.46 GB memory. But LoRA still allows training with reasonable memory usage and relatively fast times.
+
 ## Part 2: Multi-GPU Training
 
 This section demonstrates distributed training across multiple GPUs. Two separate tracks are provided - one for systems with 4x A100 80GB GPUs and another for systems with 4x V100 32GB GPUs.
+
+### Distributed Data Parallel (DDP)
+
+DDP is a model parallel training approach that enables efficient distributed training across multiple GPUs or machines.
+
+#### How DDP Works:
+1. **Data Parallelism**: Each GPU maintains a complete copy of the model
+2. **Gradient Synchronization**: During backpropagation, gradients from all replicas are synchronized (typically using all-reduce operations)
+3. **Identical Updates**: All model replicas receive identical parameter updates
+
+#### Advantages:
+- Relatively simple implementation 
+- Near-linear scaling with number of GPUs for many workloads
+- Well-established technique with mature implementations in frameworks like PyTorch
+
+#### Limitations:
+- Memory requirements scale poorly as model size increases
+- Each GPU must store the entire model, parameters, gradients, and optimizer states
+
+### Fully Sharded Data Parallel (FSDP)
+
+FSDP is an advanced distributed training technique that addresses the memory limitations of DDP.
+
+#### How FSDP Works:
+1. **Model Sharding**: The model parameters, gradients, and optimizer states are sharded across GPUs
+2. **Dynamic Communication**: During forward and backward passes, the required parameters are gathered from other GPUs as needed
+3. **Compute-Communication Overlap**: Optimized to overlap computation with communication
+
+#### Advantages:
+- **Memory Efficiency**: Dramatically reduces per-GPU memory requirements
+- **Scalability**: Enables training of much larger models than possible with DDP
+- **Flexibility**: Configurable sharding strategies to balance memory savings and communication overhead
+
+#### Performance Effects:
+
+Both techniques show different performance characteristics:
+
+| Aspect | DDP | FSDP |
+|--------|-----|------|
+| Memory Usage | High (full model on each GPU) | Low (sharded across GPUs) |
+| Communication Volume | Lower (only gradients) | Higher (parameters, gradients) |
+| Scaling Efficiency | Very good up to memory limits | Good even for massive models |
+| Implementation Complexity | Lower | Higher |
+| Training Speed | Faster for smaller models | Better for large models that wouldn't fit in DDP |
+
+
 
 ### Setup for Multi-GPU Training
 
@@ -237,7 +338,7 @@ nvtop
 
 ### A100 GPU Experiments
 
-#### Single GPU Baseline (OpenLLaMA 7B)
+#### Single GPU Baseline (OpenLLaMA 7B)(run inside)
 
 ```bash
 python3 a100_llama7b_1device.py
@@ -313,6 +414,22 @@ Attempting the same model on a single V100 (will fail with OOM):
 python3 v100_llama3b_1device.py
 ```
 
+#### Result:
+* Memory Usage on Single GPU:61.97 GB allocated, 71.35 GB reserved
+Training Time: 3 minutes 32 seconds for 400 steps.
+
+* Memory Usage on 4x A100 80GB:
+Memory Used per GPU: Around 67.83 GB to 73.98 GB allocated per GPU
+Training Time: 2 minutes 46 seconds for 100 steps
+
+* DDP does not reduce the total memory required for the training job. The potential benefit for using DDP is that it can reduce training time, as each GPU handles a subset of the data and model, allowing for parallel processing. In this example, training on 4 GPUs took 2 minutes 46 seconds, while training on 1 GPU took 3 minutes 32 seconds. I may not always get a benefit from using DDP because sometimes for smaller models or when the batch size is small, the overhead of synchronizing the GPUs can actually slow down the training process. DDP benefits most when the model size is large enough to be split effectively. 
+
+* Memory Usage with FSDP: Allocated Memory per GPU: 30.18 GB to 36.33 GB, Training Time: 2 minutes 53 seconds for 100 steps
+* Memory Usage with FSDP and Larger Batch Size: Allocated Memory per GPU: 35.23 GB to 53.54 GB, Training Time: 1 minute 50 seconds for 50 steps
+* FSDP significantly reduces memory usage to about 35 GB compared to DDP. It shard optimizer states, gradients, and parameters across multiple GPUs.
+The potential benefit of using FSDP is that it increase memory efficiency, allowing training of larger models that may not fit on a single GPU. Yes, I've observed that the memory savings from about 70 GB with DDP to 35 GB with FSDP. I can always get the benefit of less memory usage but I may not always get a benefit from using FSDP because split the model parameters across GPUs required time and resources, which can probably slow down training for smaller models sometimes.
+
+
 ### Debugging
 
 If a training job crashes with OOM (Out of Memory), you can stop all Python processes:
@@ -331,5 +448,3 @@ pkill -9 python
    - DDP increases effective batch size without reducing per-GPU memory
    - FSDP reduces per-GPU memory requirements by sharding parameters, gradients, and optimizer states
    - DeepSpeed with CPU offload enables training extremely large models with limited GPU memory
-
-This experiment highlights the various techniques that can be employed to train large language models efficiently, even with limited GPU resources.
