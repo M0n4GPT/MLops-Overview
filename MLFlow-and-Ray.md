@@ -5,6 +5,10 @@
 This experiment explores infrastructure and platform requirements for large-scale ML model training, focusing on following key components:
 
 1. **Experiment tracking** using MLFlow
+2. Use **Ray Train** for distributed training
+3. Implement fault tolerance with checkpointing
+4. Optimize resource usage with fractional GPUs
+
 
 In this first part, we'll cover:
 - Setting up a bare-metal GPU node on Chameleon Cloud
@@ -449,8 +453,394 @@ Now you can view your registered model in the "Models" tab, where you can see it
 
 
 
+# Ray Cluster for ML Training Jobs
+
+## Overview
 
 
+1. Set up a Ray cluster with head and worker nodes
+2. Configure monitoring with Prometheus and Grafana
+3. Submit jobs to the Ray cluster using different approaches
+4. Explore Ray Train for distributed training
+5. Test fault tolerance with checkpointing
+6. Optimize hyperparameters with Ray Tune
+
+
+## Setting Up the Ray Cluster
+
+### Understanding the Ray Cluster Architecture
+
+The overall system includes:
+- A Ray head node for scheduling, management, and dashboard
+- Two Ray worker nodes for computation
+- Prometheus for metrics collection and Grafana for visualization
+- MinIO object store for persistent storage
+- A separate Jupyter notebook server for job submission
+
+Ray provides components like Ray Cluster, Ray Train, Ray Tune, Ray Data, and Ray Serve. In this tutorial, we focus on Ray Cluster, Ray Train, and Ray Tune.
+
+### Starting the Ray Cluster for AMD GPUs
+
+First, verify you have two GPUs:
+
+```bash
+# run on node-mltrain
+rocm-smi
+```
+
+Build a container image for Ray worker nodes:
+
+```bash
+# run on node-mltrain
+docker build -t ray-rocm:2.42.1 -f mltrain-chi/docker/Dockerfile.ray-rocm .
+```
+
+Start the Ray cluster with Docker Compose:
+
+```bash
+# run on node-mltrain
+export HOST_IP=$(curl --silent http://169.254.169.254/latest/meta-data/public-ipv4)
+docker compose -f mltrain-chi/docker/docker-compose-ray-rocm.yaml up -d
+```
+
+Verify that containers are running:
+
+```bash
+# run on node-mltrain
+docker ps
+```
+
+Check that each worker sees a GPU:
+
+```bash
+# run on node-mltrain
+docker exec ray-worker-0 "rocm-smi"
+docker exec ray-worker-1 "rocm-smi"
+```
+
+### Starting the Ray Cluster for NVIDIA GPUs
+
+Verify you have two GPUs:
+
+```bash
+# run on node-mltrain
+nvidia-smi
+```
+
+Start the Ray cluster with Docker Compose:
+
+```bash
+# run on node-mltrain
+export HOST_IP=$(curl --silent http://169.254.169.254/latest/meta-data/public-ipv4)
+docker compose -f mltrain-chi/docker/docker-compose-ray-cuda.yaml up -d
+```
+
+Verify containers are running:
+
+```bash
+# run on node-mltrain
+docker ps
+```
+
+Check that each worker sees one GPU (the Docker Compose file assigns one GPU per worker):
+
+```bash
+# run on node-mltrain
+docker exec -it ray-worker-0 nvidia-smi --list-gpus
+docker exec -it ray-worker-1 nvidia-smi --list-gpus
+```
+
+### Starting a Jupyter Container
+
+Build a Jupyter container to submit jobs to Ray:
+
+```bash
+# run on node-mltrain
+docker build -t jupyter-ray -f mltrain-chi/docker/Dockerfile.jupyter-ray .
+```
+
+Run the Jupyter container:
+
+```bash
+# run on node-mltrain
+HOST_IP=$(curl --silent http://169.254.169.254/latest/meta-data/public-ipv4)
+docker run -d --rm -p 8888:8888 \
+    -v ~/mltrain-chi/workspace_ray:/home/jovyan/work/ \
+    -e RAY_ADDRESS=http://${HOST_IP}:8265/ \
+    --name jupyter \
+    jupyter-ray
+```
+
+Get the Jupyter access token:
+
+```bash
+# run on node-mltrain
+docker logs jupyter
+```
+
+Look for a URL like:
+```
+http://127.0.0.1:8888/lab?token=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+Access this URL in your browser, replacing `127.0.0.1` with your server's IP address.
+
+Verify the `RAY_ADDRESS` environment variable is set correctly in a Jupyter terminal:
+
+```bash
+# runs on jupyter container inside node-mltrain
+env
+```
+
+### Accessing the Ray Dashboard
+
+Open the Ray dashboard in your browser:
+
+```
+http://A.B.C.D:8265
+```
+
+Replace `A.B.C.D` with your server's IP address. Check the "Cluster" tab to verify you see the head node and two worker nodes.
+
+## Submitting Jobs to the Ray Cluster
+
+### Submitting a Basic Job
+
+First, clone the sample repository:
+
+```bash
+# run in a terminal inside jupyter container
+cd ~/work
+git clone https://github.com/teaching-on-testbeds/gourmetgram-train -b lightning
+```
+
+The runtime environment for our jobs needs to be specified. Two files are used:
+
+1. `requirements.txt` - Lists required Python packages
+2. `runtime.json` - Configures the environment:
+
+```json
+{
+    "pip": "requirements.txt",
+    "env_vars": {
+        "FOOD11_DATA_DIR": "/mnt/Food-11"
+    }
+}
+```
+
+Submit the job to Ray:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --entrypoint-num-gpus 1 --entrypoint-num-cpus 8 --verbose --working-dir . -- python gourmetgram-train/train.py
+```
+
+This command:
+- Specifies the runtime environment (`--runtime-env runtime.json`)
+- Requests 1 GPU and 8 CPUs per job (`--entrypoint-num-gpus 1 --entrypoint-num-cpus 8`)
+- Enables verbose output (`--verbose`)
+- Packages the current directory for the worker (`--working-dir .`)
+- Specifies the command to run (`python gourmetgram-train/train.py`)
+
+Monitor the job in the Ray dashboard - it will transition from PENDING to RUNNING to SUCCEEDED.
+
+### Testing Resource Constraints
+
+Try requesting more resources than available:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --entrypoint-num-gpus 2 --entrypoint-num-cpus 8 --verbose --working-dir . -- python gourmetgram-train/train.py
+```
+
+The job will remain in PENDING state because no worker has 2 GPUs. In a production environment with autoscaling enabled, Ray could spin up additional nodes to meet this demand.
+
+Press Ctrl+C to stop waiting for the job.
+
+### Using Ray Train
+
+Switch to a version of code adapted for Ray Train:
+
+```bash
+# run in a terminal inside jupyter container
+cd ~/work/gourmetgram-train
+git stash # stash any changes you made to the current branch
+git fetch -a
+git switch ray
+cd ~/work
+```
+
+The Ray Train version offers:
+- Fault tolerance with checkpointing
+- Distributed training across workers
+- Integration with Ray Tune for hyperparameter optimization
+
+Submit the Ray Train job:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --working-dir . -- python gourmetgram-train/train.py
+```
+
+Note that we don't specify GPU/CPU requirements here because they're defined in the script's `ScalingConfig`.
+
+### Scaling to Multiple Workers
+
+Edit `train.py` to use multiple workers by changing:
+
+```python
+scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
+```
+
+to:
+
+```python
+scaling_config = ScalingConfig(num_workers=2, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
+```
+
+Submit the job:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --working-dir . -- python gourmetgram-train/train.py
+```
+
+Monitor GPU usage with:
+
+```bash
+# runs on node-mltrain
+nvtop
+```
+
+You should see both GPUs being utilized.
+
+### Using Fractional GPUs
+
+Ray allows requesting fractional GPU resources for better resource utilization. Change:
+
+```python
+scaling_config = ScalingConfig(num_workers=2, use_gpu=True, resources_per_worker={"GPU": 1, "CPU": 8})
+```
+
+to:
+
+```python
+scaling_config = ScalingConfig(num_workers=1, use_gpu=True, resources_per_worker={"GPU": 0.5, "CPU": 4})
+```
+
+Open three terminals and submit the job in each:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+cd ~/work
+ray job submit --runtime-env runtime.json --working-dir . -- python gourmetgram-train/train.py
+```
+
+Monitor GPU usage:
+
+```bash
+# runs on node-mltrain
+nvtop
+```
+
+You should see one GPU handling two jobs and another handling one job. This approach increases cluster throughput for jobs that don't fully utilize a GPU.
+
+### Testing Fault Tolerance
+
+Switch to a version with fault tolerance:
+
+```bash
+# run in a terminal inside jupyter container
+cd ~/work/gourmetgram-train
+git stash # stash any changes you made to the current branch
+git fetch -a
+git switch fault_tolerance
+cd ~/work
+```
+
+Submit the job:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --working-dir . -- python gourmetgram-train/train.py
+```
+
+Wait until about 10 epochs have completed, then identify which GPU is running the job:
+
+```bash
+# runs on node-mltrain
+nvtop
+```
+
+Simulate a worker failure by stopping the container:
+
+```bash
+# runs on node-mltrain
+# Use one of these commands depending on which worker is running your job:
+# docker stop ray-worker-0
+# docker stop ray-worker-1
+```
+
+Observe in `nvtop` that the job transfers to the other GPU, and in the job logs that it resumes from a checkpoint.
+
+After the job finishes, restart the worker:
+
+```bash
+# runs on node-mltrain
+# docker start ray-worker-0
+# docker start ray-worker-1
+```
+
+### Using Ray Tune for Hyperparameter Optimization
+
+Switch to the Ray Tune version:
+
+```bash
+# run in a terminal inside jupyter container
+cd ~/work/gourmetgram-train
+git stash # stash any changes you made to the current branch
+git fetch -a
+git switch tune
+cd ~/work
+```
+
+Submit the job:
+
+```bash
+# runs on jupyter container inside node-mltrain, from inside the "work" directory
+ray job submit --runtime-env runtime.json --working-dir . -- python gourmetgram-train/train.py
+```
+
+This version uses the ASHA scheduler, which automatically terminates less promising configurations, saving cluster resources compared to grid search or random search.
+
+## Stopping the Ray Cluster
+
+When finished, stop the Ray cluster:
+
+For AMD GPUs:
+```bash
+# run on node-mltrain
+docker compose -f mltrain-chi/docker/docker-compose-ray-rocm.yaml down
+```
+
+For NVIDIA GPUs:
+```bash
+# run on node-mltrain
+docker compose -f mltrain-chi/docker/docker-compose-ray-cuda.yaml down
+```
+
+Stop the Jupyter server:
+```bash
+# run on node-mltrain
+docker stop jupyter
+```
+
+## Result Summary
+Based on the "Jobs" section of the Ray cluster dashboard at the end of the experiment
+* The baseline runtime for first Ray Train job is 6m23s. 
+* The job that ran on two worker nodes sped up training a lot because it completed in 4m3s.
+* The runtimes of the three jobs were 8m2s, 8m4s, and 6m18s, and the start time of earlier job to end time of last job is 8m29s. If these jobs had run sequentially using the baseline runtime it will take 19m9s.
+* Relative to the baseline runtime, the interrupted job took 7m9s. It is 46s longer than the baseline.If instead of automatic fault tolerance, it would have taken about 6m23s + 3m12s = 9m35s when I had completed 50% of the job.
 
 
 
